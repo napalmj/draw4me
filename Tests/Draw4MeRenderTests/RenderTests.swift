@@ -90,3 +90,43 @@ struct AutomationTests {
         #expect(!r.ok)
     }
 }
+
+@Suite("Automation: agent-readiness ops")
+struct AgentOpsTests {
+    @Test func revisionWarningsSelectionStatusRevert() throws {
+        let service = InProcessAutomationService(editor: DocumentEditor())
+        func call(_ json: String) throws -> AutomationResponse {
+            try JSONDecoder().decode(AutomationResponse.self, from: AutomationEndpoint.handle(json: Data(json.utf8), service: service))
+        }
+        var r = try call(#"{"op":"status"}"#)
+        #expect(r.status?.mode == "headless" && r.revision == 0)
+
+        r = try call(#"{"op":"apply","expectedRevision":0,"commands":[{"command":"add","kind":"box","position":{"x":0,"y":2,"z":0}}]}"#)
+        #expect(r.ok && r.revision == 1)
+        #expect(r.warnings?.first?.code == .floating)
+
+        r = try call(#"{"op":"apply","expectedRevision":0,"commands":[{"command":"delete","ids":["B1"]}]}"#)
+        #expect(!r.ok && r.errorCode == "staleRevision")
+
+        r = try call(#"{"op":"warnings"}"#)
+        #expect(r.warnings?.count == 1 && r.text?.contains("floating") == true)
+
+        r = try call(#"{"op":"selection"}"#)
+        #expect(r.selection?.ids == [])
+
+        _ = service.apply([.add(AddCommand(kind: .table, position: Vec3(4, 0, 0)))], origin: .user, label: nil)
+        r = try call(#"{"op":"revert","origin":"agent"}"#)
+        #expect(r.ok, "\(r.error ?? "")")
+        #expect(!service.document().contains("B1") && service.document().contains("T1"))
+
+        r = try call(#"{"op":"revert","origin":"agent"}"#)
+        #expect(!r.ok && r.errorCode == "nothingToUndo")
+
+        // Oversized and malformed requests are answered, not crashed on.
+        let big = Data(repeating: 0x20, count: AutomationEndpoint.maxRequestBytes + 1)
+        let resp = try JSONDecoder().decode(AutomationResponse.self, from: AutomationEndpoint.handle(json: big, service: service))
+        #expect(resp.errorCode == "limitExceeded")
+        r = try call("{not json")
+        #expect(!r.ok)
+    }
+}

@@ -24,6 +24,9 @@ public enum Palette {
     }
     public static let selection = CGColor(srgbRed: 0.10, green: 0.45, blue: 0.95, alpha: 1)
     public static let selectionNS = NSColor(srgbRed: 0.10, green: 0.45, blue: 0.95, alpha: 1)
+    /// Marks objects an agent (or script) just changed.
+    public static let agent = CGColor(srgbRed: 0.12, green: 0.68, blue: 0.42, alpha: 1)
+    public static let agentNS = NSColor(srgbRed: 0.12, green: 0.68, blue: 0.42, alpha: 1)
 }
 
 /// Options shared by the live 3D view and headless snapshots.
@@ -32,8 +35,11 @@ public struct SceneOptions: Sendable {
     public var showRoofs = true
     public var showGrid = true
     public var shadows = true
-    public init(selected: Set<String> = [], showRoofs: Bool = true, showGrid: Bool = true, shadows: Bool = true) {
+    /// Objects changed by the latest agent/script edit; tinted green until the person acts.
+    public var agentChanged: Set<String> = []
+    public init(selected: Set<String> = [], showRoofs: Bool = true, showGrid: Bool = true, shadows: Bool = true, agentChanged: Set<String> = []) {
         self.selected = selected; self.showRoofs = showRoofs; self.showGrid = showGrid; self.shadows = shadows
+        self.agentChanged = agentChanged
     }
 }
 
@@ -61,7 +67,9 @@ public enum SceneBuilder {
             if obj.kind == .roof && !options.showRoofs { continue }
             let parts = Geometry.parts(for: obj, in: doc)
             guard !parts.isEmpty else { continue }
-            let node = SCNNode(geometry: geometry(parts, highlighted: isSelected(obj, doc: doc, options.selected)))
+            let selected = isSelected(obj, doc: doc, options.selected)
+            let agent = !selected && (options.agentChanged.contains(obj.id) || obj.hostId.map(options.agentChanged.contains) == true)
+            let node = SCNNode(geometry: geometry(parts, highlighted: selected, agent: agent))
             node.name = obj.id
             node.castsShadow = true
             content.addChildNode(node)
@@ -75,7 +83,7 @@ public enum SceneBuilder {
         return false
     }
 
-    public static func geometry(_ parts: [Part], highlighted: Bool) -> SCNGeometry {
+    public static func geometry(_ parts: [Part], highlighted: Bool, agent: Bool = false) -> SCNGeometry {
         var verts: [SCNVector3] = [], norms: [SCNVector3] = []
         var elements: [SCNGeometryElement] = [], materials: [SCNMaterial] = []
         for part in parts {
@@ -90,14 +98,14 @@ public enum SceneBuilder {
                 for i in 1..<(f.points.count - 1) { idx += [base, base + UInt32(i), base + UInt32(i + 1)] }
             }
             elements.append(SCNGeometryElement(indices: idx, primitiveType: .triangles))
-            materials.append(material(part.material, highlighted: highlighted))
+            materials.append(material(part.material, highlighted: highlighted, agent: agent))
         }
         let g = SCNGeometry(sources: [SCNGeometrySource(vertices: verts), SCNGeometrySource(normals: norms)], elements: elements)
         g.materials = materials
         return g
     }
 
-    public static func material(_ m: Material, highlighted: Bool) -> SCNMaterial {
+    public static func material(_ m: Material, highlighted: Bool, agent: Bool = false) -> SCNMaterial {
         let s = SCNMaterial()
         s.lightingModel = .physicallyBased
         s.diffuse.contents = Palette.nsColor(m.color)
@@ -112,6 +120,9 @@ public enum SceneBuilder {
         if highlighted {
             s.emission.contents = Palette.selectionNS.withAlphaComponent(1)
             s.emission.intensity = 0.35
+        } else if agent {
+            s.emission.contents = Palette.agentNS.withAlphaComponent(1)
+            s.emission.intensity = 0.3
         }
         return s
     }

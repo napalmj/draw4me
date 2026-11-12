@@ -19,8 +19,8 @@ extension UTType {
 @MainActor
 final class AppModel: ObservableObject {
     let editor: DocumentEditor
-    /// The same service the Command Console (and any future AI transport) uses.
-    let automation: InProcessAutomationService
+    /// The same service the Command Console and the local agent socket use.
+    let automation: AppAutomationService
 
     @Published private(set) var document: SceneDocument
     @Published var selection: Set<String> = []
@@ -36,6 +36,10 @@ final class AppModel: ObservableObject {
     @Published var orbit = OrbitCamera()
     /// Bumped to ask the 3D view to re-frame the scene.
     @Published var frameRequest = 0
+    /// Objects the latest agent/script change created or changed; tinted until the person acts.
+    @Published var agentChanged: Set<String> = []
+    /// Who made the most recent change shown in `agentChanged`.
+    @Published var agentOrigin: CommandOrigin?
 
     private var coalesceKey: String?
     private var coalesceTime = Date.distantPast
@@ -43,14 +47,16 @@ final class AppModel: ObservableObject {
     init() {
         let ed = DocumentEditor()
         editor = ed
-        automation = InProcessAutomationService(editor: ed)
+        automation = AppAutomationService(editor: ed)
         document = ed.document
         ed.onChange = { [weak self] ed in
             guard let self else { return }
             self.document = ed.document
             self.isDirty = true
             self.selection = self.selection.filter { ed.document.contains($0) }
+            self.agentChanged = self.agentChanged.filter { ed.document.contains($0) }
         }
+        automation.model = self
         apply(.loadTemplate(LoadTemplateCommand(template: .simpleHouse)))
         editor.load(editor.document) // start with a clean history
         isDirty = false
@@ -76,6 +82,31 @@ final class AppModel: ObservableObject {
         return r
     }
 
+    /// Called by `AppAutomationService` after every apply, whoever made it.
+    func didApply(_ r: CommandResult, origin: CommandOrigin) {
+        guard r.ok else { if origin != .user { report(r) }; return }
+        if origin == .user {
+            agentChanged = []; agentOrigin = nil
+        } else if !(r.created.isEmpty && r.changed.isEmpty) {
+            agentChanged = Set(r.created + r.changed)
+            agentOrigin = origin
+            statusMessage = "\(origin == .agent ? "Agent" : "Script"): \(r.message)"
+            statusIsError = false
+        }
+    }
+
+    func didRevert(_ r: CommandResult, origin: CommandOrigin) {
+        report(r)
+        if r.ok { agentChanged = []; agentOrigin = nil }
+    }
+
+    /// Reverts the most recent agent change (even if the person edited other things since).
+    func revertAgentChanges() {
+        _ = automation.revertLast(from: .agent)
+    }
+
+    var warnings: [DesignWarning] { editor.warnings }
+
     /// For continuous controls (colour wells): repeated edits with the same key within 1.5 s
     /// collapse into one undo step.
     func applyCoalescing(_ command: Command, key: String) {
@@ -95,6 +126,7 @@ final class AppModel: ObservableObject {
     }
 
     func undo() {
+        agentChanged = []
         if let e = editor.undo() { statusMessage = "Undid \(e.label)\(e.origin == .user ? "" : " (\(e.origin.rawValue))")"; statusIsError = false }
     }
 

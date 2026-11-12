@@ -44,7 +44,7 @@ struct Drawing2DView: View {
                 Canvas { ctx, size in
                     ctx.withCGContext { cg in
                         Drafting.draw(doc, layout: lay, size: size,
-                                      options: DraftOptions(selected: model.selection, showRoofOutline: model.showRoofs), in: cg)
+                                      options: DraftOptions(selected: model.selection, showRoofOutline: model.showRoofs, agentChanged: model.agentChanged), in: cg)
                     }
                 }
                 .contentShape(Rectangle())

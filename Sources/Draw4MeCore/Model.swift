@@ -247,6 +247,9 @@ public struct SceneDocument: Codable, Hashable, Sendable {
     public var objects: [SceneObject]
     /// Next number to use for each id prefix.
     public var idCounters: [String: Int]
+    /// Monotonic change counter. `DocumentEditor` bumps it on every apply, undo, redo and revert, so a
+    /// client can say "apply this only if nothing changed since revision N" (`expectedRevision`).
+    public var revision: Int
 
     public init(name: String = "Untitled") {
         self.schemaVersion = Self.currentSchemaVersion
@@ -254,6 +257,20 @@ public struct SceneDocument: Codable, Hashable, Sendable {
         self.units = "m"
         self.objects = []
         self.idCounters = [:]
+        self.revision = 0
+    }
+
+    private enum CodingKeys: String, CodingKey { case schemaVersion, name, units, objects, idCounters, revision }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        name = try c.decode(String.self, forKey: .name)
+        units = try c.decodeIfPresent(String.self, forKey: .units) ?? "m"
+        objects = try c.decode([SceneObject].self, forKey: .objects)
+        idCounters = try c.decodeIfPresent([String: Int].self, forKey: .idCounters) ?? [:]
+        // Files written before revisions existed start at 0.
+        revision = try c.decodeIfPresent(Int.self, forKey: .revision) ?? 0
     }
 
     public func object(_ id: String) -> SceneObject? { objects.first { $0.id == id } }

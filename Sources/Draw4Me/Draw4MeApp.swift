@@ -105,6 +105,9 @@ struct Draw4MeApp: App {
                 Button("Ungroup") { model.ungroupSelection() }.keyboardShortcut("g", modifiers: [.command, .shift])
                 Button("Rotate 90° Left") { model.rotateSelection(90) }.keyboardShortcut("r", modifiers: [.command, .option])
                 Button("Deselect All") { model.selection = [] }
+                Divider()
+                Button("Revert Agent Changes") { model.revertAgentChanges() }
+                    .keyboardShortcut("z", modifiers: [.command, .option])
             }
             CommandMenu("View") {
                 Picker("Viewport", selection: $model.mode) {

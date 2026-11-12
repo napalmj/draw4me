@@ -29,7 +29,8 @@ struct ApplyTests {
         ed.apply(.move(MoveCommand(ids: ["B1"], by: Vec3(2, 0, 0))))
         #expect(ed.document.object("B1")!.transform.position == Vec3(3, 0, 1))
         ed.undo()
-        #expect(ed.document == afterAdd)
+        #expect(ed.document.objects == afterAdd.objects)
+        #expect(ed.document.revision > afterAdd.revision, "revisions only move forward")
         ed.undo()
         #expect(ed.document.objects.isEmpty)
         #expect(!ed.canUndo)
@@ -358,6 +359,7 @@ struct CatalogTests {
             .delete(.init(ids: ["a"])),
             .duplicate(.init(ids: ["a"], offset: .zero)),
             .array(.init(ids: ["a"], count: 2, spacing: .zero)),
+            .addRoom(.init(x: 0, z: 0, width: 3, depth: 3, y: 0, height: 2.7, thickness: 0.2, floor: true, name: "n", ref: "r", wallMaterial: .named("oak"), floorMaterial: .named("oak"))),
             .transaction(.init(label: "l", commands: [])),
         ]
         #expect(Set(samples.map(\.name)) == Set(CommandName.allCases))

@@ -18,6 +18,8 @@ public struct CommandSpec: Hashable, Sendable {
     public let fields: [FieldSpec]
     /// A complete, valid example (JSON). Unit tests decode every example.
     public let example: String
+    /// Removes or replaces existing content (still undoable). Tool layers should ask before using it.
+    public var destructive: Bool = false
 }
 
 /// The machine-readable description of everything the command layer accepts.
@@ -31,13 +33,13 @@ public enum CommandCatalog {
         case .newDocument:
             return CommandSpec(name: name, summary: "Clear everything and start an empty document.",
                                fields: [FieldSpec("name", .text, "Document name")],
-                               example: #"{"command":"newDocument","name":"My Cabin"}"#)
+                               example: #"{"command":"newDocument","name":"My Cabin"}"#, destructive: true)
         case .loadTemplate:
             return CommandSpec(name: name, summary: "Insert a built-in template (built from ordinary commands).",
                                fields: [FieldSpec("template", .choice(TemplateName.allCases.map(\.rawValue)), required: true, "Template to load"),
                                         FieldSpec("replace", .bool, "Replace the current document (default true)"),
                                         FieldSpec("offset", .vector, "Where to place the template's origin (default 0,0,0)")],
-                               example: #"{"command":"loadTemplate","template":"simple_house"}"#)
+                               example: #"{"command":"loadTemplate","template":"simple_house"}"#, destructive: true)
         case .add:
             return CommandSpec(name: name, summary: "Add an object. Omitted parameters use the kind's defaults (see objectKinds).",
                                fields: [FieldSpec("kind", .choice(ObjectKind.allCases.map(\.rawValue)), required: true, "Object kind"),
@@ -99,7 +101,7 @@ public enum CommandCatalog {
         case .delete:
             return CommandSpec(name: name, summary: "Delete objects. Deleting a group deletes its members; deleting a wall deletes its doors/windows.",
                                fields: [ids],
-                               example: #"{"command":"delete","ids":["CH2"]}"#)
+                               example: #"{"command":"delete","ids":["CH2"]}"#, destructive: true)
         case .duplicate:
             return CommandSpec(name: name, summary: "Copy objects (with group members and hosted doors/windows).",
                                fields: [ids, FieldSpec("offset", .vector, "Offset of the copy (default 0.5, 0, 0.5; for doors/windows x slides along the wall)")],
@@ -110,6 +112,21 @@ public enum CommandCatalog {
                                         FieldSpec("count", .count, required: true, "Total number including the original (2...100)"),
                                         FieldSpec("spacing", .vector, required: true, "Offset between consecutive copies")],
                                example: #"{"command":"array","ids":["CH1"],"count":3,"spacing":{"x":0.6}}"#)
+        case .addRoom:
+            return CommandSpec(name: name, summary: "Add a rectangular room: 4 walls on the rectangle's centre lines with clean corners, an optional floor slab, grouped. North/south walls start at their west end, east/west walls at their north end; door/window offsets are measured from that start. With ref 'k', later commands can use @k, @k.north, @k.south, @k.east, @k.west, @k.floor.",
+                               fields: [FieldSpec("x", .length, required: true, "West edge (wall centre line), x"),
+                                        FieldSpec("z", .length, required: true, "North edge (wall centre line), z"),
+                                        FieldSpec("width", .length, required: true, "Size along x (east-west), centre line to centre line"),
+                                        FieldSpec("depth", .length, required: true, "Size along z (north-south), centre line to centre line"),
+                                        FieldSpec("y", .length, "Base height (default 0; use for upper storeys)"),
+                                        FieldSpec("height", .length, "Wall height (default 2.7)"),
+                                        FieldSpec("thickness", .length, "Wall thickness (default 0.2)"),
+                                        FieldSpec("floor", .bool, "Add a floor slab under the room (default true)"),
+                                        FieldSpec("name", .text, "Room name (the group's name)"),
+                                        FieldSpec("ref", .text, "Batch-local alias for the room and its walls (see summary)"),
+                                        FieldSpec("wallMaterial", .object, "Wall material"),
+                                        FieldSpec("floorMaterial", .object, "Floor material")],
+                               example: #"{"command":"addRoom","ref":"kitchen","name":"Kitchen","x":0,"z":0,"width":4,"depth":3.5}"#)
         case .transaction:
             return CommandSpec(name: name, summary: "Apply several commands as one undoable step; if any fails, none are applied.",
                                fields: [FieldSpec("label", .text, "Undo label"),
@@ -147,6 +164,7 @@ public enum CommandCatalog {
             return [
                 "name": spec.name.rawValue,
                 "description": spec.summary,
+                "destructive": spec.destructive,
                 "parameters": ["type": "object",
                                "properties": props,
                                "required": ["command"] + spec.fields.filter(\.required).map(\.name),

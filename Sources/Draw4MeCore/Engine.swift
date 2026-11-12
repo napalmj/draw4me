@@ -23,6 +23,9 @@ public struct ChangeSet: Codable, Hashable, Sendable {
     }
 
     public var isEmpty: Bool { created.isEmpty && changed.isEmpty && deleted.isEmpty }
+
+    /// Every id this change set mentions.
+    public var allIds: Set<String> { Set(created).union(changed).union(deleted) }
 }
 
 /// Batch-local state: aliases created with `ref` so later commands can say `@alias`.
@@ -154,6 +157,9 @@ enum Engine {
                 _ = try clone(ids, delta: c.spacing * Double(k), doc: &doc, changes: &changes)
             }
 
+        case .addRoom(let c):
+            try addRoom(c, doc: &doc, changes: &changes, ctx: &ctx)
+
         case .transaction(let c):
             for (i, sub) in c.commands.enumerated() {
                 do { try execute(sub, doc: &doc, changes: &changes, ctx: &ctx) }
@@ -162,6 +168,45 @@ enum Engine {
                     throw e
                 }
             }
+        }
+    }
+
+    // MARK: rooms
+
+    static func addRoom(_ c: AddRoomCommand, doc: inout SceneDocument, changes: inout ChangeSet, ctx: inout ExecutionContext) throws {
+        for v in [c.x, c.z, c.width, c.depth, c.y ?? 0, c.height ?? 2.7, c.thickness ?? 0.2] where !v.isFinite {
+            throw CommandError.invalidParameter("addRoom values must be finite numbers")
+        }
+        guard (0.3...200).contains(c.width), (0.3...200).contains(c.depth) else {
+            throw CommandError.invalidParameter("addRoom width and depth must be between 0.3 and 200 m")
+        }
+        if let r = c.ref, r.isEmpty || r.count > 64 { throw CommandError.invalidParameter("ref must be 1-64 characters") }
+        let t = c.thickness ?? 0.2, h = c.height ?? 2.7, y = c.y ?? 0
+        let x0 = c.x, x1 = c.x + c.width, z0 = c.z, z1 = c.z + c.depth
+        // Private refs for the generated objects; exposed under the caller's ref afterwards.
+        var inner = ExecutionContext()
+        func wall(_ key: String, _ name: String, _ a: Vec3, _ b: Vec3) -> Command {
+            .add(AddCommand(kind: .wall, ref: key, name: name, from: a, to: b, params: ["height": .number(h), "thickness": .number(t)], material: c.wallMaterial))
+        }
+        let room = (c.name.map { try? nonEmpty($0, "name") } ?? nil) ?? "Room"
+        var subs: [Command] = [
+            wall("north", "\(room) north wall", Vec3(x0 - t / 2, y, z0), Vec3(x1 + t / 2, y, z0)),
+            wall("south", "\(room) south wall", Vec3(x0 - t / 2, y, z1), Vec3(x1 + t / 2, y, z1)),
+            wall("west", "\(room) west wall", Vec3(x0, y, z0 + t / 2), Vec3(x0, y, z1 - t / 2)),
+            wall("east", "\(room) east wall", Vec3(x1, y, z0 + t / 2), Vec3(x1, y, z1 - t / 2)),
+        ]
+        var members = ["@north", "@south", "@west", "@east"]
+        if c.floor ?? true {
+            subs.append(.add(AddCommand(kind: .slab, ref: "floor", name: "\(room) floor", position: Vec3((x0 + x1) / 2, y, (z0 + z1) / 2),
+                                        params: ["width": .number(c.width + t), "depth": .number(c.depth + t), "thickness": 0.2],
+                                        material: c.floorMaterial ?? .named("oak"))))
+            members.insert("@floor", at: 0)
+        }
+        subs.append(.group(GroupCommand(ids: members, ref: "room", name: room)))
+        for sub in subs { try execute(sub, doc: &doc, changes: &changes, ctx: &inner) }
+        if let r = c.ref {
+            ctx.aliases[r] = inner.aliases["room"]
+            for k in ["north", "south", "east", "west", "floor"] { if let id = inner.aliases[k] { ctx.aliases["\(r).\(k)"] = id } }
         }
     }
 

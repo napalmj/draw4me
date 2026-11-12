@@ -30,10 +30,13 @@ public struct DraftOptions: Sendable {
     public var showRoofOutline = true
     public var showLabels = true
     public var showTitle = true
+    /// Objects changed by the latest agent/script edit; outlined in green.
+    public var agentChanged: Set<String> = []
     public init(selected: Set<String> = [], showDimensions: Bool = true, showGrid: Bool = true,
-                showRoofOutline: Bool = true, showLabels: Bool = true, showTitle: Bool = true) {
+                showRoofOutline: Bool = true, showLabels: Bool = true, showTitle: Bool = true, agentChanged: Set<String> = []) {
         self.selected = selected; self.showDimensions = showDimensions; self.showGrid = showGrid
         self.showRoofOutline = showRoofOutline; self.showLabels = showLabels; self.showTitle = showTitle
+        self.agentChanged = agentChanged
     }
 }
 
@@ -305,6 +308,19 @@ public enum Drafting {
         if o.showDimensions {
             for w in walls { wallDimension(w, L, ctx) }
             if walls.isEmpty, !objs.isEmpty { overallDimensions(doc, L, ctx) }
+        }
+        // Agent changes, then selection on top.
+        let agentIds = o.agentChanged.subtracting(o.selected)
+        if !agentIds.isEmpty {
+            ctx.setStrokeColor(Palette.agent)
+            ctx.setLineWidth(2)
+            ctx.setLineDash(phase: 0, lengths: [5, 3])
+            for id in agentIds.sorted() {
+                guard let x = doc.object(id) else { continue }
+                for poly in planOutline(x, doc, L) { ctx.addPath(path(poly)) }
+            }
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
         }
         // Selection.
         let sel = expandedSelection(doc, o.selected)

@@ -20,6 +20,7 @@ final class ViewportView: SCNView {
     var orbit = OrbitCamera() { didSet { orbit.apply(to: cameraNode) } }
     private(set) var document = SceneDocument()
     private(set) var selection: Set<String> = []
+    private(set) var agentChanged: Set<String> = []
     private var showRoofs = true
 
     private enum DragMode { case none, pendingClick(String?), orbit, pan, move(ids: [String], planeY: Double, start: Vec3) }
@@ -58,11 +59,11 @@ final class ViewportView: SCNView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(document: SceneDocument, selection: Set<String>, showRoofs: Bool) {
-        guard document != self.document || selection != self.selection || showRoofs != self.showRoofs else { return }
+    func update(document: SceneDocument, selection: Set<String>, showRoofs: Bool, agentChanged: Set<String> = []) {
+        guard document != self.document || selection != self.selection || showRoofs != self.showRoofs || agentChanged != self.agentChanged else { return }
         let docChanged = document != self.document
-        self.document = document; self.selection = selection; self.showRoofs = showRoofs
-        SceneBuilder.rebuild(content, doc: document, options: SceneOptions(selected: selection, showRoofs: showRoofs))
+        self.document = document; self.selection = selection; self.showRoofs = showRoofs; self.agentChanged = agentChanged
+        SceneBuilder.rebuild(content, doc: document, options: SceneOptions(selected: selection, showRoofs: showRoofs, agentChanged: agentChanged))
         if docChanged, let s = scene { SceneBuilder.fitShadows(s, doc: document) }
     }
 
@@ -224,13 +225,13 @@ struct Viewport3D: NSViewRepresentable {
         v.orbit = model.orbit
         context.coordinator.lastFrameRequest = model.frameRequest
         wire(v)
-        v.update(document: model.document, selection: model.selection, showRoofs: model.showRoofs)
+        v.update(document: model.document, selection: model.selection, showRoofs: model.showRoofs, agentChanged: model.agentChanged)
         return v
     }
 
     func updateNSView(_ v: ViewportView, context: Context) {
         wire(v)
-        v.update(document: model.document, selection: model.selection, showRoofs: model.showRoofs)
+        v.update(document: model.document, selection: model.selection, showRoofs: model.showRoofs, agentChanged: model.agentChanged)
         if context.coordinator.lastFrameRequest != model.frameRequest {
             context.coordinator.lastFrameRequest = model.frameRequest
             v.fitToView()

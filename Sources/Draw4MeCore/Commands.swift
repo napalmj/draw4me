@@ -10,6 +10,10 @@ public enum CommandOrigin: String, Codable, CaseIterable, Hashable, Sendable {
 public struct CommandError: Error, Codable, Hashable, Sendable, CustomStringConvertible {
     public enum Code: String, Codable, Sendable {
         case invalidCommand, invalidParameter, notFound, wrongKind, conflict, doesNotFit, unsupported, nothingToUndo
+        /// `expectedRevision` didn't match: someone else changed the document. Re-read and retry.
+        case staleRevision
+        /// A size or count limit was exceeded (see `Limits`).
+        case limitExceeded
     }
 
     public var code: Code
@@ -284,6 +288,30 @@ public struct ArrayCommand: Codable, Hashable, Sendable {
     }
 }
 
+/// A rectangular room: four walls on the rectangle's centre lines (corners joined cleanly) plus an
+/// optional floor slab, grouped. With `ref: "k"`, later commands in the batch can use `@k` (the group),
+/// `@k.north`, `@k.south`, `@k.east`, `@k.west` (walls) and `@k.floor`.
+public struct AddRoomCommand: Codable, Hashable, Sendable {
+    public var x: Double
+    public var z: Double
+    public var width: Double
+    public var depth: Double
+    public var y: Double?
+    public var height: Double?
+    public var thickness: Double?
+    public var floor: Bool?
+    public var name: String?
+    public var ref: String?
+    public var wallMaterial: MaterialRef?
+    public var floorMaterial: MaterialRef?
+
+    public init(x: Double, z: Double, width: Double, depth: Double, y: Double? = nil, height: Double? = nil, thickness: Double? = nil,
+                floor: Bool? = nil, name: String? = nil, ref: String? = nil, wallMaterial: MaterialRef? = nil, floorMaterial: MaterialRef? = nil) {
+        self.x = x; self.z = z; self.width = width; self.depth = depth; self.y = y; self.height = height; self.thickness = thickness
+        self.floor = floor; self.name = name; self.ref = ref; self.wallMaterial = wallMaterial; self.floorMaterial = floorMaterial
+    }
+}
+
 public struct TransactionCommand: Codable, Hashable, Sendable {
     public var label: String?
     public var commands: [Command]
@@ -316,6 +344,7 @@ public enum Command: Hashable, Sendable {
     case delete(DeleteCommand)
     case duplicate(DuplicateCommand)
     case array(ArrayCommand)
+    case addRoom(AddRoomCommand)
     case transaction(TransactionCommand)
 
     public var name: CommandName {
@@ -333,6 +362,7 @@ public enum Command: Hashable, Sendable {
         case .delete: return .delete
         case .duplicate: return .duplicate
         case .array: return .array
+        case .addRoom: return .addRoom
         case .transaction: return .transaction
         }
     }
@@ -354,6 +384,7 @@ public enum Command: Hashable, Sendable {
         case .delete(let c): return "Delete \(n(c.ids))"
         case .duplicate(let c): return "Duplicate \(n(c.ids))"
         case .array(let c): return "Array \(n(c.ids)) ×\(c.count)"
+        case .addRoom(let c): return "Add Room \(c.name ?? "")".trimmingCharacters(in: .whitespaces)
         case .transaction(let c): return c.label ?? "\(c.commands.count) Changes"
         }
     }
@@ -363,7 +394,7 @@ public enum Command: Hashable, Sendable {
 /// command without documenting it is a compile error.
 public enum CommandName: String, Codable, CaseIterable, Sendable {
     case newDocument, loadTemplate, add, update, move, rotate, resize, setMaterial
-    case group, ungroup, delete, duplicate, array, transaction
+    case group, ungroup, delete, duplicate, array, addRoom, transaction
 }
 
 struct AnyKey: CodingKey {
@@ -408,6 +439,7 @@ extension Command: Codable {
             case .delete: self = .delete(try DeleteCommand(from: decoder))
             case .duplicate: self = .duplicate(try DuplicateCommand(from: decoder))
             case .array: self = .array(try ArrayCommand(from: decoder))
+            case .addRoom: self = .addRoom(try AddRoomCommand(from: decoder))
             case .transaction: self = .transaction(try TransactionCommand(from: decoder))
             }
         } catch let e as CommandError {
@@ -434,6 +466,7 @@ extension Command: Codable {
         case .delete(let p): try p.encode(to: encoder)
         case .duplicate(let p): try p.encode(to: encoder)
         case .array(let p): try p.encode(to: encoder)
+        case .addRoom(let p): try p.encode(to: encoder)
         case .transaction(let p): try p.encode(to: encoder)
         }
     }
@@ -465,6 +498,9 @@ extension Command: Codable {
         return (try? String(data: e.encode(self), encoding: .utf8)) ?? "{}"
     }
 }
+
+/// Readable description of a decoding error (shared with transports).
+public func describeDecoding(_ e: DecodingError) -> String { describe(e) }
 
 func describe(_ e: DecodingError) -> String {
     func path(_ p: [CodingKey]) -> String {

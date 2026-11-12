@@ -52,7 +52,13 @@ struct ContentView: View {
             Text(model.statusMessage).lineLimit(1).truncationMode(.tail)
                 .foregroundStyle(model.statusIsError ? .primary : .secondary)
             Spacer()
-            Text("\(model.document.objects.count) objects · \(model.selection.count) selected")
+            if !model.agentChanged.isEmpty {
+                Button("Revert Agent Change") { model.revertAgentChanges() }
+                    .buttonStyle(.link)
+                    .help("Undo the most recent change the agent made (green outlines)")
+            }
+            WarningsButton(model: model)
+            Text("\(model.document.objects.count) objects · \(model.selection.count) selected · rev \(model.document.revision)")
                 .foregroundStyle(.secondary)
         }
         .font(.caption)
@@ -93,4 +99,43 @@ struct ContentView: View {
     }
 
     var quickAdd: [ObjectKind] { [.wall, .door, .window, .slab, .table, .chair, .box] }
+}
+
+/// Status-bar button listing design warnings; clicking one selects the objects involved.
+struct WarningsButton: View {
+    @ObservedObject var model: AppModel
+    @State private var showing = false
+
+    var body: some View {
+        let warnings = model.warnings
+        Button {
+            showing.toggle()
+        } label: {
+            Label("\(warnings.count)", systemImage: warnings.isEmpty ? "checkmark.seal" : "exclamationmark.triangle")
+                .foregroundStyle(warnings.isEmpty ? Color.secondary : Color.orange)
+        }
+        .buttonStyle(.borderless)
+        .help(warnings.isEmpty ? "No design warnings" : "\(warnings.count) design warning\(warnings.count == 1 ? "" : "s")")
+        .popover(isPresented: $showing, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(warnings.isEmpty ? "No design warnings" : "Design warnings").font(.headline)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(warnings.prefix(200).enumerated()), id: \.offset) { _, w in
+                            Button {
+                                model.selection = Set(w.ids.filter { model.document.contains($0) })
+                            } label: {
+                                Text(w.message).font(.callout).multilineTextAlignment(.leading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 260)
+            }
+            .padding(12)
+            .frame(width: 360)
+        }
+    }
 }
