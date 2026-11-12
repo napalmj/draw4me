@@ -244,7 +244,7 @@ public struct SceneDocument: Codable, Hashable, Sendable {
     /// Always "m" for now; kept explicit so files are self-describing.
     public var units: String
     /// Ordered list of objects (order is stable and used for deterministic output).
-    public var objects: [SceneObject]
+    public var objects: [SceneObject] { didSet { lookup = LookupBox() } }
     /// Next number to use for each id prefix.
     public var idCounters: [String: Int]
     /// Monotonic change counter. `DocumentEditor` bumps it on every apply, undo, redo and revert, so a
@@ -262,6 +262,15 @@ public struct SceneDocument: Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case schemaVersion, name, units, objects, idCounters, revision }
 
+    public static func == (a: SceneDocument, b: SceneDocument) -> Bool {
+        a.schemaVersion == b.schemaVersion && a.name == b.name && a.units == b.units && a.revision == b.revision
+            && a.idCounters == b.idCounters && a.objects == b.objects
+    }
+
+    public func hash(into h: inout Hasher) {
+        h.combine(schemaVersion); h.combine(name); h.combine(revision); h.combine(objects)
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
@@ -273,12 +282,16 @@ public struct SceneDocument: Codable, Hashable, Sendable {
         revision = try c.decodeIfPresent(Int.self, forKey: .revision) ?? 0
     }
 
-    public func object(_ id: String) -> SceneObject? { objects.first { $0.id == id } }
-    public func index(of id: String) -> Int? { objects.firstIndex { $0.id == id } }
+    /// Lookup tables built on first use and thrown away whenever `objects` changes, so lookups are
+    /// O(1) without callers having to maintain anything. Not part of equality, hashing or JSON.
+    private var lookup = LookupBox()
+
+    public func object(_ id: String) -> SceneObject? { index(of: id).map { objects[$0] } }
+    public func index(of id: String) -> Int? { lookup.tables(objects).index[id] }
     public func contains(_ id: String) -> Bool { index(of: id) != nil }
 
-    public func children(of groupId: String) -> [SceneObject] { objects.filter { $0.parentId == groupId } }
-    public func hosted(in wallId: String) -> [SceneObject] { objects.filter { $0.hostId == wallId } }
+    public func children(of groupId: String) -> [SceneObject] { (lookup.tables(objects).children[groupId] ?? []).map { objects[$0] } }
+    public func hosted(in wallId: String) -> [SceneObject] { (lookup.tables(objects).hosted[wallId] ?? []).map { objects[$0] } }
 
     /// All ids inside a group, recursively (not including the group itself).
     public func descendants(of id: String) -> [String] {
@@ -307,12 +320,44 @@ public struct SceneDocument: Codable, Hashable, Sendable {
 
     public func jsonData() throws -> Data { try Self.encoder().encode(self) }
 
+    /// Largest document file accepted.
+    public static let maxFileBytes = 50 * 1024 * 1024
+
+    /// Decodes and checks a document from untrusted bytes (files, other processes).
     public static func load(from data: Data) throws -> SceneDocument {
+        guard data.count <= maxFileBytes else { throw CommandError(code: .limitExceeded, message: "The file is larger than 50 MB") }
         let doc = try JSONDecoder().decode(SceneDocument.self, from: data)
         guard doc.schemaVersion <= currentSchemaVersion else {
             throw CommandError(code: .unsupported, message: "Document schema \(doc.schemaVersion) is newer than this app supports (\(currentSchemaVersion)).")
         }
         // Future: migrate older schema versions here.
+        try DocumentLimits.check(doc)
         return doc
+    }
+}
+
+/// Lazily built id/host/parent indexes for a `SceneDocument`'s objects. Shared by copies of the
+/// same document value (they have identical objects) and replaced whenever `objects` is mutated.
+final class LookupBox: @unchecked Sendable {
+    struct Tables {
+        var index: [String: Int] = [:]
+        var hosted: [String: [Int]] = [:]
+        var children: [String: [Int]] = [:]
+    }
+    private var built: Tables?
+    private let lock = NSLock()
+
+    func tables(_ objects: [SceneObject]) -> Tables {
+        lock.lock(); defer { lock.unlock() }
+        if let t = built { return t }
+        var t = Tables()
+        t.index.reserveCapacity(objects.count)
+        for (i, o) in objects.enumerated() {
+            if t.index[o.id] == nil { t.index[o.id] = i }   // first wins, like the old linear search
+            if let h = o.hostId { t.hosted[h, default: []].append(i) }
+            if let p = o.parentId { t.children[p, default: []].append(i) }
+        }
+        built = t
+        return t
     }
 }

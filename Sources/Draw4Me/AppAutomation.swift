@@ -32,7 +32,7 @@ final class AppAutomationService: InProcessAutomationService {
             guard let model else { return super.selection() }
             let ids = model.sortedSelection
             guard !ids.isEmpty else { return SelectionInfo(ids: [], description: "Nothing is selected in the app.") }
-            let lines = SceneSummary(model.document).text.split(separator: "\n").filter { line in
+            let lines = SceneSummary(model.document, only: Set(ids)).text.split(separator: "\n").filter { line in
                 ids.contains { line.hasPrefix("- \($0) ") || line.hasPrefix("\($0) ") || line.contains("[\($0)]") }
             }
             let desc = "Selected: \(ids.joined(separator: ", "))" + (lines.isEmpty ? "" : "\n" + lines.joined(separator: "\n"))

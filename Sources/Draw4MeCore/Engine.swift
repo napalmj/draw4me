@@ -5,20 +5,35 @@ public struct ChangeSet: Codable, Hashable, Sendable {
     public var created: [String] = []
     public var changed: [String] = []
     public var deleted: [String] = []
+    // Membership sets so recording stays O(1) per id (big copies/arrays touch thousands of ids).
+    private var seenCreated = Set<String>(), seenChanged = Set<String>(), seenDeleted = Set<String>()
+
+    private enum CodingKeys: String, CodingKey { case created, changed, deleted }
 
     public init() {}
 
-    mutating func create(_ id: String) { if !created.contains(id) { created.append(id) } }
-    mutating func change(_ id: String) { if !changed.contains(id) { changed.append(id) } }
-    mutating func delete(_ id: String) { if !deleted.contains(id) { deleted.append(id) } }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        created = try c.decode([String].self, forKey: .created)
+        changed = try c.decode([String].self, forKey: .changed)
+        deleted = try c.decode([String].self, forKey: .deleted)
+        seenCreated = Set(created); seenChanged = Set(changed); seenDeleted = Set(deleted)
+    }
+
+    public static func == (a: ChangeSet, b: ChangeSet) -> Bool { a.created == b.created && a.changed == b.changed && a.deleted == b.deleted }
+    public func hash(into h: inout Hasher) { h.combine(created); h.combine(changed); h.combine(deleted) }
+
+    mutating func create(_ id: String) { if seenCreated.insert(id).inserted { created.append(id) } }
+    mutating func change(_ id: String) { if seenChanged.insert(id).inserted { changed.append(id) } }
+    mutating func delete(_ id: String) { if seenDeleted.insert(id).inserted { deleted.append(id) } }
 
     /// Normalise: things created then deleted vanish; created/deleted things aren't also "changed".
     func normalized() -> ChangeSet {
         var c = ChangeSet()
         let deletedSet = Set(deleted), createdSet = Set(created)
-        c.created = created.filter { !deletedSet.contains($0) }
-        c.deleted = deleted.filter { !createdSet.contains($0) }
-        c.changed = changed.filter { !deletedSet.contains($0) && !createdSet.contains($0) }
+        for id in created where !deletedSet.contains(id) { c.create(id) }
+        for id in deleted where !createdSet.contains(id) { c.delete(id) }
+        for id in changed where !deletedSet.contains(id) && !createdSet.contains(id) { c.change(id) }
         return c
     }
 
@@ -31,6 +46,7 @@ public struct ChangeSet: Codable, Hashable, Sendable {
 /// Batch-local state: aliases created with `ref` so later commands can say `@alias`.
 struct ExecutionContext {
     var aliases: [String: String] = [:]
+    var depth = 0
 }
 
 /// Applies commands to a document value. Pure: no history, no notifications (see `DocumentEditor`).
@@ -127,7 +143,7 @@ enum Engine {
             doc.objects.append(g)
             for id in ids { doc.objects[doc.index(of: id)!].parentId = gid; changes.change(id) }
             changes.create(gid)
-            if let r = c.ref { ctx.aliases[r] = gid }
+            if let r = c.ref { try checkRef(r); ctx.aliases[r] = gid }
 
         case .ungroup(let c):
             let id = try resolve(c.id, doc, ctx)
@@ -157,14 +173,15 @@ enum Engine {
             let ids = try resolveAll(c.ids, doc, ctx)
             guard (2...100).contains(c.count) else { throw CommandError.invalidParameter("count must be between 2 and 100") }
             guard c.spacing.isFinite, c.spacing.length > 1e-6 else { throw CommandError.invalidParameter("spacing must be a non-zero offset") }
-            for k in 1..<c.count {
-                _ = try clone(ids, delta: c.spacing * Double(k), doc: &doc, changes: &changes)
-            }
+            _ = try clone(ids, deltas: (1..<c.count).map { c.spacing * Double($0) }, doc: &doc, changes: &changes)
 
         case .addRoom(let c):
             try addRoom(c, doc: &doc, changes: &changes, ctx: &ctx)
 
         case .transaction(let c):
+            ctx.depth += 1
+            defer { ctx.depth -= 1 }
+            guard ctx.depth <= 8 else { throw CommandError(code: .limitExceeded, message: "Transactions can be nested at most 8 deep") }
             for (i, sub) in c.commands.enumerated() {
                 do { try execute(sub, doc: &doc, changes: &changes, ctx: &ctx) }
                 catch var e as CommandError {
@@ -266,7 +283,7 @@ enum Engine {
         doc.objects.append(obj)
         changes.create(id)
         if let r = c.ref {
-            guard !r.isEmpty else { throw CommandError.invalidParameter("ref must not be empty") }
+            try checkRef(r)
             ctx.aliases[r] = id
         }
     }
@@ -388,31 +405,51 @@ enum Engine {
 
     @discardableResult
     static func clone(_ ids: [String], delta: Vec3, doc: inout SceneDocument, changes: inout ChangeSet) throws -> [String: String] {
+        try clone(ids, deltas: [delta], doc: &doc, changes: &changes).first ?? [:]
+    }
+
+    /// Makes one copy of `ids` (with group members and hosted doors/windows) per delta. All copies
+    /// are appended at once, and the object limit is checked before any work is done.
+    @discardableResult
+    static func clone(_ ids: [String], deltas: [Vec3], doc: inout SceneDocument, changes: inout ChangeSet) throws -> [[String: String]] {
         let set = Set(expand(ids, doc, includeHosted: true))
         let sources = doc.objects.filter { set.contains($0.id) }
-        var map: [String: String] = [:]
-        for s in sources { map[s.id] = doc.makeId(for: s.kind) }
-        for s in sources {
-            var n = s
-            n.id = map[s.id]!
-            n.name = s.name == defaultName(s.kind, s.id) ? defaultName(s.kind, n.id) : s.name
-            if let p = s.parentId { n.parentId = map[p] ?? p }
-            if s.kind.isHosted {
-                if let h = s.hostId, let nh = map[h] {
-                    n.hostId = nh
+        let total = doc.objects.count + sources.count * deltas.count
+        guard total <= Limits.maxObjects else {
+            throw CommandError(code: .limitExceeded, message: "That would make \(total) objects (max \(Limits.maxObjects))")
+        }
+        var maps: [[String: String]] = []
+        var added: [SceneObject] = []
+        added.reserveCapacity(sources.count * deltas.count)
+        for delta in deltas {
+            var map: [String: String] = [:]
+            for s in sources { map[s.id] = doc.makeId(for: s.kind) }
+            for s in sources {
+                var n = s
+                n.id = map[s.id]!
+                n.name = s.name == defaultName(s.kind, s.id) ? defaultName(s.kind, n.id) : s.name
+                if let p = s.parentId { n.parentId = map[p] ?? p }
+                if s.kind.isHosted {
+                    if let h = s.hostId, let nh = map[h] {
+                        n.hostId = nh
+                    } else {
+                        n.params["offset"] = .number(s.number("offset") + delta.x)
+                    }
                 } else {
-                    n.params["offset"] = .number(s.number("offset") + delta.x)
+                    n.transform.position += delta
                 }
-            } else {
-                n.transform.position += delta
+                added.append(n)
+                changes.create(n.id)
             }
-            doc.objects.append(n)
-            changes.create(n.id)
+            maps.append(map)
         }
-        for s in sources where s.kind.isHosted {
-            try checkFit(doc.object(map[s.id]!)!, doc: doc)
+        doc.objects.append(contentsOf: added)
+        for map in maps {
+            for s in sources where s.kind.isHosted {
+                try checkFit(doc.object(map[s.id]!)!, doc: doc)
+            }
         }
-        return map
+        return maps
     }
 
     // MARK: helpers
@@ -421,11 +458,34 @@ enum Engine {
         "\(kind == .slab ? "Floor" : kind.displayName) \(id)"
     }
 
+    /// Free text from people or agents: control characters (newlines, escapes) are removed, so a
+    /// name can't break the line-per-object scene text, and length is capped.
     static func nonEmpty(_ s: String?, _ field: String) throws -> String? {
         guard let s else { return nil }
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = String(String.UnicodeScalarView(s.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+        let t = clean.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { throw CommandError.invalidParameter("'\(field)' must not be empty") }
+        guard t.count <= Limits.maxNameLength else { throw CommandError.invalidParameter("'\(field)' must be at most \(Limits.maxNameLength) characters") }
         return t
+    }
+
+    static func checkRef(_ r: String) throws {
+        guard !r.isEmpty, r.count <= 64, !r.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw CommandError.invalidParameter("ref must be 1-64 characters")
+        }
+    }
+
+    /// Run after every command: keeps documents within the limits regardless of how they were built.
+    static func checkLimits(_ doc: SceneDocument) throws {
+        guard doc.objects.count <= Limits.maxObjects else {
+            throw CommandError(code: .limitExceeded, message: "That would make \(doc.objects.count) objects (max \(Limits.maxObjects))")
+        }
+        for o in doc.objects {
+            let p = o.transform.position
+            guard p.isFinite, abs(p.x) <= Limits.maxCoordinate, abs(p.y) <= Limits.maxCoordinate, abs(p.z) <= Limits.maxCoordinate else {
+                throw CommandError.invalidParameter("\(o.id) would end up at \(p), outside ±\(Int(Limits.maxCoordinate)) m")
+            }
+        }
     }
 
     static func newId(_ requested: String?, kind: ObjectKind, doc: inout SceneDocument) throws -> String {
@@ -464,8 +524,9 @@ enum Engine {
     /// The ids plus group descendants (and, optionally, the doors/windows of included walls), in a stable order.
     static func expand(_ ids: [String], _ doc: SceneDocument, includeHosted: Bool) -> [String] {
         var out: [String] = []
+        var seen = Set<String>()
         func add(_ id: String) {
-            guard !out.contains(id) else { return }
+            guard seen.insert(id).inserted else { return }
             out.append(id)
             for d in doc.descendants(of: id) { add(d) }
             if includeHosted { for h in doc.hosted(in: id) { add(h.id) } }

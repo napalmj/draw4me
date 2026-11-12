@@ -21,6 +21,7 @@ final class ViewportView: SCNView {
     private(set) var document = SceneDocument()
     private(set) var selection: Set<String> = []
     private(set) var agentChanged: Set<String> = []
+    private var builtOnce = false
     private var showRoofs = true
 
     private enum DragMode { case none, pendingClick(String?), orbit, pan, move(ids: [String], planeY: Double, start: Vec3) }
@@ -62,8 +63,16 @@ final class ViewportView: SCNView {
     func update(document: SceneDocument, selection: Set<String>, showRoofs: Bool, agentChanged: Set<String> = []) {
         guard document != self.document || selection != self.selection || showRoofs != self.showRoofs || agentChanged != self.agentChanged else { return }
         let docChanged = document != self.document
+        let oldOptions = SceneOptions(selected: self.selection, showRoofs: self.showRoofs, agentChanged: self.agentChanged)
+        let newOptions = SceneOptions(selected: selection, showRoofs: showRoofs, agentChanged: agentChanged)
+        // Only rebuild the nodes that changed (see SceneBuilder.update); the first build is full.
+        if builtOnce {
+            SceneBuilder.update(content, from: self.document, oldOptions: oldOptions, to: document, options: newOptions)
+        } else {
+            SceneBuilder.rebuild(content, doc: document, options: newOptions)
+            builtOnce = true
+        }
         self.document = document; self.selection = selection; self.showRoofs = showRoofs; self.agentChanged = agentChanged
-        SceneBuilder.rebuild(content, doc: document, options: SceneOptions(selected: selection, showRoofs: showRoofs, agentChanged: agentChanged))
         if docChanged, let s = scene { SceneBuilder.fitShadows(s, doc: document) }
     }
 

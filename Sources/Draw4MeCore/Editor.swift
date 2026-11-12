@@ -30,22 +30,81 @@ public struct CommandResult: Codable, Hashable, Sendable {
     }
 }
 
+/// One object's state before and after a step (nil = didn't exist), with its position in the list.
+public struct ObjectDelta: Codable, Hashable, Sendable {
+    public var id: String
+    public var before: SceneObject?
+    public var after: SceneObject?
+    public var beforeIndex: Int?
+    public var afterIndex: Int?
+}
+
 /// One undoable step. A step can contain many commands (a transaction) and records who made it.
+/// It stores only what changed (per-object deltas), so history memory stays proportional to the
+/// size of the edits, not the size of the document.
 public struct HistoryEntry: Codable, Hashable, Sendable, Identifiable {
     public var id: Int
     public var label: String
     public var origin: CommandOrigin
     public var commands: [Command]
     public var changes: ChangeSet
-    public var before: SceneDocument
-    public var after: SceneDocument
+    public var deltas: [ObjectDelta]
+    public var nameBefore: String
+    public var nameAfter: String
+    public var countersBefore: [String: Int]
+    public var countersAfter: [String: Int]
+
+    /// Computes the deltas between two versions of a document in O(n).
+    public static func diff(_ a: SceneDocument, _ b: SceneDocument) -> [ObjectDelta] {
+        var ai: [String: Int] = [:], bi: [String: Int] = [:]
+        for (i, o) in a.objects.enumerated() { ai[o.id] = i }
+        for (i, o) in b.objects.enumerated() { bi[o.id] = i }
+        var out: [ObjectDelta] = []
+        for (i, o) in a.objects.enumerated() {
+            if let j = bi[o.id] {
+                if b.objects[j] != o { out.append(ObjectDelta(id: o.id, before: o, after: b.objects[j], beforeIndex: i, afterIndex: j)) }
+            } else {
+                out.append(ObjectDelta(id: o.id, before: o, after: nil, beforeIndex: i, afterIndex: nil))
+            }
+        }
+        for (j, o) in b.objects.enumerated() where ai[o.id] == nil {
+            out.append(ObjectDelta(id: o.id, before: nil, after: o, beforeIndex: nil, afterIndex: j))
+        }
+        return out
+    }
+
+    /// Applies the deltas forwards (redo) or backwards (undo) to `doc`.
+    public func apply(to doc: SceneDocument, forward: Bool) -> SceneDocument {
+        var objects = doc.objects
+        var index: [String: Int] = [:]
+        for (i, o) in objects.enumerated() { index[o.id] = i }
+        var removeIds = Set<String>()
+        var inserts: [(Int, SceneObject)] = []
+        for d in deltas {
+            let target = forward ? d.after : d.before
+            let at = forward ? d.afterIndex : d.beforeIndex
+            if let t = target {
+                if let i = index[d.id] { objects[i] = t } else { inserts.append((at ?? Int.max, t)) }
+            } else {
+                removeIds.insert(d.id)
+            }
+        }
+        if !removeIds.isEmpty { objects.removeAll { removeIds.contains($0.id) } }
+        for (i, o) in inserts.sorted(by: { $0.0 < $1.0 }) { objects.insert(o, at: min(i, objects.count)) }
+        var out = doc
+        out.objects = objects
+        out.name = forward ? nameAfter : nameBefore
+        // Id counters only move forward so ids are never reused, even across undo.
+        out.idCounters = doc.idCounters.merging(forward ? countersAfter : countersBefore) { max($0, $1) }
+        return out
+    }
 }
 
 /// The one and only way to change a document.
 ///
 /// Every edit — toolbar clicks, inspector fields, drags, the Command Console, the CLI and (later)
 /// an AI agent — calls `apply`. Batches are atomic: either every command succeeds or the
-/// document is left untouched. Undo is snapshot based, so it is exact.
+/// document is left untouched. Undo replays exact per-object deltas.
 public final class DocumentEditor {
     public private(set) var document: SceneDocument
     public private(set) var undoStack: [HistoryEntry] = []
@@ -57,10 +116,11 @@ public final class DocumentEditor {
     public var onChange: ((DocumentEditor) -> Void)?
 
     private var warningsCache: [DesignWarning]?
+    private let boundsCache = Validator.BoundsCache()
     /// Current design warnings (computed lazily, cached until the next change).
     public var warnings: [DesignWarning] {
         if let w = warningsCache { return w }
-        let w = Validator.warnings(for: document)
+        let w = Validator.warnings(for: document, cache: boundsCache)
         warningsCache = w
         return w
     }
@@ -115,7 +175,9 @@ public final class DocumentEditor {
             }
             newDoc.revision = document.revision + 1
             let entry = HistoryEntry(id: nextHistoryId, label: label ?? Self.label(for: commands), origin: origin,
-                                     commands: commands, changes: changes, before: document, after: newDoc)
+                                     commands: commands, changes: changes, deltas: HistoryEntry.diff(document, newDoc),
+                                     nameBefore: document.name, nameAfter: newDoc.name,
+                                     countersBefore: document.idCounters, countersAfter: newDoc.idCounters)
             nextHistoryId += 1
             undoStack.append(entry)
             if undoStack.count > maxHistory { undoStack.removeFirst(undoStack.count - maxHistory) }
@@ -140,12 +202,17 @@ public final class DocumentEditor {
     /// Compute the result of commands without committing (live previews, "what would this do?").
     public func dryRun(_ commands: [Command]) -> Result<(SceneDocument, ChangeSet), CommandError> {
         guard !commands.isEmpty else { return .failure(.invalidCommand("No commands given")) }
+        func count(_ cs: [Command]) -> Int { cs.reduce(0) { n, c in if case .transaction(let t) = c { return n + 1 + count(t.commands) }; return n + 1 } }
+        guard count(commands) <= Limits.maxCommandsPerRequest else {
+            return .failure(CommandError(code: .limitExceeded, message: "Too many commands in one change (max \(Limits.maxCommandsPerRequest), counting nested transactions)"))
+        }
         var doc = document
         var changes = ChangeSet()
         var ctx = ExecutionContext()
         for (i, c) in commands.enumerated() {
             do {
                 try Engine.execute(c, doc: &doc, changes: &changes, ctx: &ctx)
+                try Engine.checkLimits(doc)
             } catch var e as CommandError {
                 if commands.count > 1 { e.commandIndex = i }
                 return .failure(e)
@@ -159,7 +226,7 @@ public final class DocumentEditor {
     @discardableResult
     public func undo() -> HistoryEntry? {
         guard let e = undoStack.popLast() else { return nil }
-        setDocument(e.before)
+        setDocument(e.apply(to: document, forward: false))
         redoStack.append(e)
         didChange()
         return e
@@ -168,7 +235,7 @@ public final class DocumentEditor {
     @discardableResult
     public func redo() -> HistoryEntry? {
         guard let e = redoStack.popLast() else { return nil }
-        setDocument(e.after)
+        setDocument(e.apply(to: document, forward: true))
         undoStack.append(e)
         didChange()
         return e
@@ -205,7 +272,8 @@ public final class DocumentEditor {
         guard clash.isEmpty else {
             return .failure(CommandError(code: .conflict, message: "Can't revert '\(entry.label)': later changes also touched \(clash.sorted().prefix(12).joined(separator: ", ")). Undo those first."))
         }
-        // Patch the current document and every later snapshot so later undo/redo stay consistent.
+        // Later steps didn't touch these objects, and history stores per-object deltas, so only the
+        // current document needs patching.
         func patch(_ d: SceneDocument) -> SceneDocument { Self.revert(entry, in: d) }
         var newDoc = patch(document)
         // Later steps may have built on objects this entry created (a door in its wall, a member of its group).
@@ -215,10 +283,6 @@ public final class DocumentEditor {
             return .failure(CommandError(code: .conflict, message: "Can't revert '\(entry.label)': later objects depend on it (\(dangling.prefix(12).joined(separator: ", "))). Undo those first."))
         }
         newDoc.revision = document.revision + 1
-        for i in (k + 1)..<undoStack.count {
-            undoStack[i].before = patch(undoStack[i].before)
-            undoStack[i].after = patch(undoStack[i].after)
-        }
         undoStack.remove(at: k)
         redoStack.removeAll()
         document = newDoc
@@ -229,19 +293,9 @@ public final class DocumentEditor {
     /// Applies the inverse of `entry`'s changes to `d`: objects it created are removed, objects it
     /// changed or deleted get their earlier state back (deleted ones at their old position).
     static func revert(_ entry: HistoryEntry, in d: SceneDocument) -> SceneDocument {
-        var d = d
-        let created = Set(entry.changes.created)
-        d.objects.removeAll { created.contains($0.id) }
-        for id in entry.changes.changed {
-            guard let old = entry.before.object(id), let i = d.index(of: id) else { continue }
-            d.objects[i] = old
-        }
-        for id in entry.changes.deleted {
-            guard let old = entry.before.object(id), !d.contains(id) else { continue }
-            let at = min(entry.before.index(of: id) ?? d.objects.count, d.objects.count)
-            d.objects.insert(old, at: at)
-        }
-        return d
+        var out = entry.apply(to: d, forward: false)
+        out.name = d.name   // a later step may have renamed the document; keep that
+        return out
     }
 
     /// Result shape for undo/redo/revert, with revision and warnings filled in.
@@ -255,11 +309,16 @@ public final class DocumentEditor {
         commands.count == 1 ? commands[0].label : "\(commands.count) Changes"
     }
 
+    /// "W1, W2, … (+1580 more)": keeps messages short for big edits (full lists stay in the result).
+    public static func idList(_ ids: [String], max: Int = 40) -> String {
+        ids.count <= max ? ids.joined(separator: ", ") : ids.prefix(max).joined(separator: ", ") + ", … (+\(ids.count - max) more)"
+    }
+
     static func describe(_ e: HistoryEntry) -> String {
         var bits: [String] = []
-        if !e.changes.created.isEmpty { bits.append("created \(e.changes.created.joined(separator: ", "))") }
-        if !e.changes.changed.isEmpty { bits.append("changed \(e.changes.changed.joined(separator: ", "))") }
-        if !e.changes.deleted.isEmpty { bits.append("deleted \(e.changes.deleted.joined(separator: ", "))") }
+        if !e.changes.created.isEmpty { bits.append("created \(idList(e.changes.created))") }
+        if !e.changes.changed.isEmpty { bits.append("changed \(idList(e.changes.changed))") }
+        if !e.changes.deleted.isEmpty { bits.append("deleted \(idList(e.changes.deleted))") }
         return "\(e.label): " + (bits.isEmpty ? "done" : bits.joined(separator: "; "))
     }
 }

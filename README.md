@@ -193,6 +193,8 @@ connections off in **Developer ▸ Allow Agent Connections**.
 
 ## CLI
 
+`draw4me-cli --bench [HOUSES]` runs the performance check used in [docs/REVIEW.md](docs/REVIEW.md).
+
 `draw4me-cli` is headless: it applies commands to a document and renders PNGs. It uses no
 network.
 

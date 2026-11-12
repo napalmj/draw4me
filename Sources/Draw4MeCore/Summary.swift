@@ -27,14 +27,17 @@ public struct SceneSummary: Codable, Hashable, Sendable {
     public var objects: [ObjectInfo]
     public var relations: [String]
 
-    public init(_ doc: SceneDocument) {
+    /// Summary of the whole document, or (with `only`) of just those objects and their relations.
+    public init(_ doc: SceneDocument, only: Set<String>? = nil) {
         name = doc.name
         schemaVersion = doc.schemaVersion
         units = doc.units
         objectCount = doc.objects.count
         bounds = Geometry.documentBounds(doc).map { Bounds(min: r3($0.min), max: r3($0.max)) }
         var rel: [String] = []
-        objects = doc.objects.map { o in
+        let listed = only.map { ids in doc.objects.filter { ids.contains($0.id) } } ?? doc.objects
+        func involved(_ ids: String...) -> Bool { only.map { set in ids.contains { set.contains($0) } } ?? true }
+        objects = listed.map { o in
             let b = Geometry.bounds(of: o, in: doc)
             var info = ObjectInfo(id: o.id, kind: o.kind, name: o.name,
                                   position: r3(Geometry.anchor(of: o, in: doc)), rotation: r(o.transform.rotation),
@@ -48,28 +51,45 @@ public struct SceneSummary: Codable, Hashable, Sendable {
             if o.kind == .group { info.material = "-" }
             return info
         }
-        for o in doc.objects {
+        for o in listed {
             if let h = o.hostId, let p = Geometry.placement(of: o, in: doc) {
                 rel.append("\(o.id) (\(o.kind.rawValue)) is in wall \(h) at \(fmt(p.offset)) m from its start (the wall's +Z side faces \(compass(p.across)))")
             }
         }
-        for g in doc.objects where g.kind == .group {
+        for g in listed where g.kind == .group {
             let kids = doc.children(of: g.id).map(\.id)
-            rel.append("group \(g.id) \"\(g.name)\" contains \(kids.isEmpty ? "nothing" : kids.joined(separator: ", "))")
+            rel.append("group \(g.id) \(quoted(g.name)) contains \(kids.isEmpty ? "nothing" : kids.joined(separator: ", "))")
         }
         // Wall joints: endpoints within a wall thickness of another wall's centre line ends.
         let walls = doc.objects.filter { $0.kind == .wall }
-        for (i, a) in walls.enumerated() {
-            for b in walls[(i + 1)...] {
-                let tol = max(a.number("thickness"), b.number("thickness")) * 1.01
-                let ea = [a.transform.position, a.transform.apply(Vec3(a.number("length"), 0, 0))]
-                if let hit = ea.first(where: { distanceToSegment($0, b) <= tol }) {
-                    rel.append("wall \(a.id) meets wall \(b.id) near \(r3(hit))")
-                } else {
-                    let eb = [b.transform.position, b.transform.apply(Vec3(b.number("length"), 0, 0))]
-                    if let hit = eb.first(where: { distanceToSegment($0, a) <= tol }) {
-                        rel.append("wall \(b.id) meets wall \(a.id) near \(r3(hit))")
-                    }
+        // Bucket walls on a 2 m grid so only nearby walls are compared (was every pair).
+        var buckets: [Int64: [Int]] = [:]
+        func cells(_ w: SceneObject) -> [Int64] {
+            let a = w.transform.position, b = w.transform.apply(Vec3(w.number("length"), 0, 0))
+            let pad = w.number("thickness") * 1.01
+            func c(_ v: Double) -> Int64 { Int64(max(-1_000_000, min(1_000_000, (v / 2).rounded(.down)))) }
+            let x0 = c(min(a.x, b.x) - pad), x1 = c(max(a.x, b.x) + pad), z0 = c(min(a.z, b.z) - pad), z1 = c(max(a.z, b.z) + pad)
+            guard (x1 - x0 + 1) * (z1 - z0 + 1) <= 10_000 else { return [Int64.min] }
+            var out: [Int64] = []
+            for x in x0...x1 { for z in z0...z1 { out.append(x &* 2_000_003 &+ z) } }
+            return out
+        }
+        for (i, w) in walls.enumerated() { for k in cells(w) { buckets[k, default: []].append(i) } }
+        var pairs = Set<Int>()
+        for list in buckets.values where list.count > 1 {
+            for x in 0..<list.count { for y in (x + 1)..<list.count { pairs.insert(list[x] * walls.count + list[y]) } }
+        }
+        for key in pairs.sorted() {
+            let a = walls[key / walls.count], b = walls[key % walls.count]
+            guard involved(a.id, b.id) else { continue }
+            let tol = max(a.number("thickness"), b.number("thickness")) * 1.01
+            let ea = [a.transform.position, a.transform.apply(Vec3(a.number("length"), 0, 0))]
+            if let hit = ea.first(where: { distanceToSegment($0, b) <= tol }) {
+                rel.append("wall \(a.id) meets wall \(b.id) near \(r3(hit))")
+            } else {
+                let eb = [b.transform.position, b.transform.apply(Vec3(b.number("length"), 0, 0))]
+                if let hit = eb.first(where: { distanceToSegment($0, a) <= tol }) {
+                    rel.append("wall \(b.id) meets wall \(a.id) near \(r3(hit))")
                 }
             }
         }
@@ -78,15 +98,15 @@ public struct SceneSummary: Codable, Hashable, Sendable {
 
     /// Plain text, one line per object. Stable for identical documents.
     public var text: String {
-        var out = "Document \"\(name)\": \(objectCount) object\(objectCount == 1 ? "" : "s"), units \(units). Y up, +X east, +Z south.\n"
+        var out = "Document \(quoted(name)): \(objectCount) object\(objectCount == 1 ? "" : "s"), units \(units). Y up, +X east, +Z south.\n"
         if let b = bounds {
             out += "Extents: x \(fmt(b.min.x))…\(fmt(b.max.x)), y \(fmt(b.min.y))…\(fmt(b.max.y)), z \(fmt(b.min.z))…\(fmt(b.max.z)) (\(fmt(b.size.x)) × \(fmt(b.size.z)) m footprint, \(fmt(b.size.y)) m tall)\n"
         }
         for o in objects {
-            var line = "\(o.id) \(o.kind.rawValue) \"\(o.name)\""
+            var line = "\(o.id) \(o.kind.rawValue) \(quoted(o.name))"
             switch o.kind {
             case .wall:
-                line += " \(o.from!)→\(o.to!) length \(p(o, "length")) height \(p(o, "height")) thick \(p(o, "thickness"))"
+                line += " \(o.from ?? o.position)→\(o.to ?? o.position) length \(p(o, "length")) height \(p(o, "height")) thick \(p(o, "thickness"))"
             case .door, .window:
                 line += " in \(o.host ?? "?") at offset \(p(o, "offset")) (centre \(o.position)) \(p(o, "width"))×\(p(o, "height"))"
                 if o.kind == .window { line += " sill \(p(o, "sill"))" }
@@ -96,7 +116,7 @@ public struct SceneSummary: Codable, Hashable, Sendable {
                 line += " at \(o.position)"
                 if o.rotation != 0 { line += " rot \(fmt(o.rotation))°" }
                 let keys = o.params.keys.sorted()
-                if !keys.isEmpty { line += " " + keys.map { "\($0) \(o.params[$0]!)" }.joined(separator: ", ") }
+                if !keys.isEmpty { line += " " + keys.map { "\($0) \(o.params[$0].map { quotedValue($0) } ?? "?")" }.joined(separator: ", ") }
             }
             if o.kind == .wall, o.rotation != 0 { line += " rot \(fmt(o.rotation))°" }
             if o.material != "-" { line += ", \(o.material)" }
@@ -116,6 +136,18 @@ public struct SceneSummary: Codable, Hashable, Sendable {
     }
 
     private func p(_ o: ObjectInfo, _ k: String) -> String { o.params[k]?.description ?? "?" }
+}
+
+/// Free text typed by people (or agents) is quoted and stripped of control characters, so it reads as
+/// data and can't break the line structure an agent relies on.
+public func quoted(_ s: String) -> String {
+    let clean = String(String.UnicodeScalarView(s.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+    return "\"" + String(clean.prefix(Limits.maxNameLength)).replacingOccurrences(of: "\"", with: "'") + "\""
+}
+
+private func quotedValue(_ v: ParamValue) -> String {
+    if case .string(let s) = v { return String(quoted(s).dropFirst().dropLast()) }
+    return v.description
 }
 
 private func r(_ v: Double) -> Double { (v * 1000).rounded() / 1000 + 0 }

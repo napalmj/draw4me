@@ -24,8 +24,9 @@ OPTIONS
   --size WxH         Pixel size (default 1600x1000; 2D views are drawn at 2x)
   --summary          Print the scene summary (text, or JSON with --json)
   --catalog          Print the command catalog (JSON, or text with --text)
-  --request FILE     Handle an automation request (same JSON a future AI bridge would send),
+  --request FILE     Handle an automation request (the same JSON the MCP relay sends),
                      print the response JSON. '-' = stdin.
+  --bench [HOUSES]   Performance check on a synthetic scene of HOUSES houses (default 100).
 
 EXAMPLES
   draw4me-cli --command '{"command":"loadTemplate","template":"simple_house"}' \\
@@ -49,6 +50,12 @@ struct RenderJob { var path: String; var view: RenderView = .perspective; var si
 
 var args = Array(CommandLine.arguments.dropFirst())
 if args.isEmpty || args.contains("--help") || args.contains("-h") { print(usage); exit(0) }
+if args.first == "--bench" {
+    // Performance check on a large synthetic scene: draw4me-cli --bench [HOUSES]
+    let houses = args.count > 1 ? max(1, min(2000, Int(args[1]) ?? 100)) : 100
+    print(Benchmark.report(Benchmark.run(houses: houses)))
+    exit(0)
+}
 
 var docPath: String?
 var batches: [(String, Data)] = []

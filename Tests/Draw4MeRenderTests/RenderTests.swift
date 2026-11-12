@@ -130,3 +130,44 @@ struct AgentOpsTests {
         #expect(!r.ok)
     }
 }
+
+@Suite("Incremental 3D updates")
+struct IncrementalSceneTests {
+    @Test func updateMatchesFullRebuildAndTouchesOnlyWhatChanged() throws {
+        let ed = DocumentEditor()
+        ed.apply(.loadTemplate(LoadTemplateCommand(template: .simpleHouse)))
+        ed.apply(.loadTemplate(LoadTemplateCommand(template: .diningSet, replace: false, offset: Vec3(2.5, 0, 4))))
+        let scene = SceneBuilder.makeScene(ed.document)
+        let content = scene.rootNode.childNode(withName: SceneBuilder.contentNodeName, recursively: false)!
+        var old = ed.document
+        let opts = SceneOptions()
+
+        // Moving one chair rebuilds exactly that chair.
+        ed.apply(.move(MoveCommand(ids: ["CH1"], by: Vec3(0.1, 0, 0))))
+        #expect(SceneBuilder.update(content, from: old, oldOptions: opts, to: ed.document, options: opts) == 1)
+        old = ed.document
+
+        // Widening a door rebuilds the door and its wall (the hole changes).
+        let door = ed.document.objects.first { $0.kind == .door }!
+        ed.apply(.update(UpdateCommand(id: door.id, params: ["width": 0.85])))
+        #expect(SceneBuilder.update(content, from: old, oldOptions: opts, to: ed.document, options: opts) >= 2)
+        old = ed.document
+
+        // Deleting a wall removes it and its openings; the result matches a full rebuild.
+        ed.apply(.delete(DeleteCommand(ids: [door.hostId!])))
+        SceneBuilder.update(content, from: old, oldOptions: opts, to: ed.document, options: opts)
+        let full = SceneBuilder.makeScene(ed.document).rootNode.childNode(withName: SceneBuilder.contentNodeName, recursively: false)!
+        #expect(Set(content.childNodes.compactMap(\.name)) == Set(full.childNodes.compactMap(\.name)))
+        #expect(content.childNodes.count == full.childNodes.count)
+    }
+}
+
+@Suite("Render limits")
+struct RenderLimitTests {
+    @Test func hugeRequestsAreScaledDown() {
+        let s = RenderRequest(view: .plan, width: 4096, height: 4096).size
+        #expect(Double(s.width * s.height) <= RenderRequest.maxPixels + 1)
+        #expect(abs(s.width / s.height - 1) < 0.01, "aspect ratio kept")
+        #expect(RenderRequest(view: .plan, width: 1, height: 1_000_000).size.height <= 4096)
+    }
+}

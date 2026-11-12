@@ -9,8 +9,8 @@ public protocol AutomationService: AnyObject {
     /// Apply commands as one undoable transaction, tagged with who issued them. With
     /// `expectedRevision`, the change is rejected (`staleRevision`) if the document moved on.
     func apply(_ commands: [Command], origin: CommandOrigin, label: String?, expectedRevision: Int?) -> CommandResult
-    /// Compact, deterministic description of the current scene.
-    func sceneSummary() -> SceneSummary
+    /// Compact, deterministic description of the current scene (or only of `ids`).
+    func sceneSummary(only ids: Set<String>?) -> SceneSummary
     /// Machine-readable description of every command and object kind (JSON).
     func catalogJSON() -> String
     /// Render the current design to PNG (2D or 3D), without a window.
@@ -33,6 +33,8 @@ public protocol AutomationService: AnyObject {
 }
 
 extension AutomationService {
+    public func sceneSummary() -> SceneSummary { sceneSummary(only: nil) }
+
     public func apply(_ commands: [Command], origin: CommandOrigin, label: String?) -> CommandResult {
         apply(commands, origin: origin, label: label, expectedRevision: nil)
     }
@@ -90,7 +92,7 @@ open class InProcessAutomationService: AutomationService {
         editor.apply(commands, origin: origin, label: label, expectedRevision: expectedRevision)
     }
 
-    open func sceneSummary() -> SceneSummary { SceneSummary(editor.document) }
+    open func sceneSummary(only ids: Set<String>?) -> SceneSummary { SceneSummary(editor.document, only: ids) }
 
     public func catalogJSON() -> String { CommandCatalog.jsonString() }
 
@@ -153,11 +155,13 @@ public struct AutomationRequest: Codable, Sendable {
     public var format: String?
     public var render: RenderRequest?
     public var limit: Int?
+    /// For `summary`: only describe these objects.
+    public var ids: [String]?
 
     public init(op: Op, commands: [Command]? = nil, origin: CommandOrigin? = nil, label: String? = nil, expectedRevision: Int? = nil,
-                format: String? = nil, render: RenderRequest? = nil, limit: Int? = nil) {
+                format: String? = nil, render: RenderRequest? = nil, limit: Int? = nil, ids: [String]? = nil) {
         self.op = op; self.commands = commands; self.origin = origin; self.label = label; self.expectedRevision = expectedRevision
-        self.format = format; self.render = render; self.limit = limit
+        self.format = format; self.render = render; self.limit = limit; self.ids = ids
     }
 
     /// Ops that never change the document.
@@ -214,7 +218,7 @@ public enum AutomationEndpoint {
             let r = service.apply(cmds, origin: request.origin ?? .agent, label: request.label.map { String($0.prefix(120)) }, expectedRevision: request.expectedRevision)
             return AutomationResponse(ok: r.ok, result: r, text: r.message, warnings: r.warnings, error: r.error?.message, errorCode: r.error?.code.rawValue)
         case .summary:
-            let s = service.sceneSummary()
+            let s = service.sceneSummary(only: request.ids.map { Set($0.prefix(2_000)) })
             return AutomationResponse(ok: true, text: request.format == "json" ? s.jsonString() : s.text)
         case .catalog:
             return AutomationResponse(ok: true, text: request.format == "text" ? CommandCatalog.text() : service.catalogJSON())

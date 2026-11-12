@@ -76,6 +76,54 @@ public enum SceneBuilder {
         }
     }
 
+    /// Updates `content` from `old` to `doc`, rebuilding only nodes whose object, highlight, or
+    /// dependent geometry changed (a wall's openings, an opening's wall). Falls back to a full
+    /// rebuild when roof visibility changes. Returns how many nodes were rebuilt.
+    @discardableResult
+    public static func update(_ content: SCNNode, from old: SceneDocument, oldOptions: SceneOptions,
+                              to doc: SceneDocument, options: SceneOptions) -> Int {
+        guard oldOptions.showRoofs == options.showRoofs else { rebuild(content, doc: doc, options: options); return doc.objects.count }
+        func state(_ o: SceneObject, _ d: SceneDocument, _ opt: SceneOptions) -> (Bool, Bool) {
+            let sel = isSelected(o, doc: d, opt.selected)
+            return (sel, !sel && (opt.agentChanged.contains(o.id) || o.hostId.map(opt.agentChanged.contains) == true))
+        }
+        var dirty = Set<String>()
+        for o in doc.objects where o.kind != .group {
+            guard let before = old.object(o.id) else { dirty.insert(o.id); continue }
+            if before != o || state(before, old, oldOptions) != state(o, doc, options) { dirty.insert(o.id) }
+        }
+        var removed = Set<String>()
+        for o in old.objects where !doc.contains(o.id) {
+            removed.insert(o.id)
+            if let h = o.hostId { dirty.insert(h) }
+        }
+        // Openings cut their wall; walls carry their openings.
+        for id in Array(dirty) {
+            guard let o = doc.object(id) else { continue }
+            if let h = o.hostId { dirty.insert(h) }
+            if o.kind == .wall { for h in doc.hosted(in: id) { dirty.insert(h.id) } }
+            if let before = old.object(id), let h = before.hostId { dirty.insert(h) }
+        }
+        dirty.subtract(removed)
+        guard !dirty.isEmpty || !removed.isEmpty else { return 0 }
+        var nodes: [String: SCNNode] = [:]
+        for n in content.childNodes { if let name = n.name { nodes[name] = n } }
+        for id in removed.union(dirty) { nodes[id]?.removeFromParentNode() }
+        var rebuilt = 0
+        for id in dirty {
+            guard let obj = doc.object(id), obj.kind != .group, !(obj.kind == .roof && !options.showRoofs) else { continue }
+            let parts = Geometry.parts(for: obj, in: doc)
+            guard !parts.isEmpty else { continue }
+            let (selected, agent) = state(obj, doc, options)
+            let node = SCNNode(geometry: geometry(parts, highlighted: selected, agent: agent))
+            node.name = obj.id
+            node.castsShadow = true
+            content.addChildNode(node)
+            rebuilt += 1
+        }
+        return rebuilt
+    }
+
     static func isSelected(_ o: SceneObject, doc: SceneDocument, _ sel: Set<String>) -> Bool {
         if sel.contains(o.id) { return true }
         var p = o.parentId

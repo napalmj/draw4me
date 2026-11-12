@@ -51,9 +51,16 @@ public final class HeadlessBackend: MCPBackend {
     public init(fileURL: URL) {
         self.fileURL = fileURL
         let editor = DocumentEditor()
-        if let data = try? Data(contentsOf: fileURL), let doc = try? SceneDocument.load(from: data) {
-            try? DocumentLimits.check(doc)
-            editor.load(doc)
+        if let data = try? Data(contentsOf: fileURL) {
+            do {
+                editor.load(try SceneDocument.load(from: data))
+            } catch {
+                // Don't silently overwrite a file we can't read: move it aside first.
+                let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+                let backup = fileURL.deletingPathExtension().appendingPathExtension("unreadable-\(stamp).draw4me")
+                try? FileManager.default.moveItem(at: fileURL, to: backup)
+                FileHandle.standardError.write(Data("draw4me-mcp: \(fileURL.path) could not be read (\(error)); moved it to \(backup.lastPathComponent) and started empty\n".utf8))
+            }
         }
         service = InProcessAutomationService(editor: editor, mode: "headless", fileURL: fileURL)
     }
@@ -73,6 +80,8 @@ public final class HeadlessBackend: MCPBackend {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         try service.editor.document.jsonData().write(to: fileURL, options: .atomic)
+        // Designs can be private: keep the auto-saved file readable by this user only.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 
     /// Replace the document with one read from disk (already path-checked by the caller).

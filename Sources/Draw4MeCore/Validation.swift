@@ -43,9 +43,24 @@ public enum Validator {
         .shelf: ["depth": 0.15...0.7],
     ]
 
-    public static func warnings(for doc: SceneDocument) -> [DesignWarning] {
+    /// Remembers object bounds between runs. An object's bounding box depends only on the object
+    /// itself (openings cut holes but don't change a wall's box), so it can be keyed by its value.
+    public final class BoundsCache: @unchecked Sendable {
+        var map: [SceneObject: Bounds] = [:]
+        public init() {}
+    }
+
+    public static func warnings(for doc: SceneDocument, cache: BoundsCache? = nil) -> [DesignWarning] {
         var out: [DesignWarning] = []
         let index = DocIndex(doc)
+        var fresh: [SceneObject: Bounds] = [:]
+        func bounds(_ o: SceneObject) -> Bounds? {
+            if let b = cache?.map[o] { fresh[o] = b; return b }
+            let b = index.bounds(o)
+            if let b { fresh[o] = b }
+            return b
+        }
+        defer { cache?.map = fresh }
 
         // Implausible dimensions.
         for o in doc.objects {
@@ -62,7 +77,7 @@ public enum Validator {
         let solids = doc.objects.filter { $0.kind != .group && !$0.kind.isHosted }
         var boxes: [(SceneObject, Bounds)] = []
         boxes.reserveCapacity(solids.count)
-        for o in solids { if let b = index.bounds(o) { boxes.append((o, b)) } }
+        for o in solids { if let b = bounds(o) { boxes.append((o, b)) } }
 
         // Intersections, using a uniform grid on the ground plane so this stays fast for big scenes.
         let grid = SpatialGrid(boxes.map(\.1), cell: 2.0)
@@ -187,14 +202,7 @@ struct SpatialGrid {
 /// Per-call lookup tables so validation doesn't rescan the document for every object.
 struct DocIndex {
     let doc: SceneDocument
-    private let hostedByWall: [String: [SceneObject]]
-
-    init(_ doc: SceneDocument) {
-        self.doc = doc
-        var h: [String: [SceneObject]] = [:]
-        for o in doc.objects { if let w = o.hostId { h[w, default: []].append(o) } }
-        hostedByWall = h
-    }
+    init(_ doc: SceneDocument) { self.doc = doc }
 
     func bounds(_ o: SceneObject) -> Bounds? {
         Bounds(points: Geometry.parts(for: o, in: doc).flatMap { $0.faces.flatMap(\.points) })

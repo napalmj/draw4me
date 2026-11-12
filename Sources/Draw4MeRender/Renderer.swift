@@ -46,8 +46,13 @@ public struct RenderRequest: Codable, Hashable, Sendable {
         self.yaw = yaw; self.pitch = pitch; self.showRoofs = showRoofs
     }
 
+    /// Largest image area produced (pixels); larger requests are scaled down keeping the aspect ratio.
+    public static let maxPixels = 4096.0 * 2896
+
     public var size: CGSize {
-        CGSize(width: max(64, min(4096, width ?? 1200)), height: max(64, min(4096, height ?? 800)))
+        var w = Double(max(64, min(4096, width ?? 1200))), h = Double(max(64, min(4096, height ?? 800)))
+        if w * h > Self.maxPixels { let k = (Self.maxPixels / (w * h)).squareRoot(); w = (w * k).rounded(.down); h = (h * k).rounded(.down) }
+        return CGSize(width: w, height: h)
     }
 }
 
@@ -68,7 +73,9 @@ public enum Renderer {
     public static func png(_ doc: SceneDocument, request r: RenderRequest) throws -> Data {
         let size = r.size
         if let dv = r.view.draftView {
-            guard let data = Drafting.png(doc, view: dv, size: size, options: DraftOptions(selected: Set(r.highlight ?? []))) else {
+            // 2D drawings render at 2x for crisp lines, but not for already-huge requests (memory).
+            let scale: CGFloat = size.width * size.height > 2_100_000 ? 1 : 2
+            guard let data = Drafting.png(doc, view: dv, size: size, options: DraftOptions(selected: Set(r.highlight ?? [])), scale: scale) else {
                 throw RenderError.encodingFailed
             }
             return data

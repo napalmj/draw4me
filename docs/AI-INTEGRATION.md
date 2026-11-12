@@ -63,6 +63,8 @@ Claude Code / Claude desktop ──stdio (JSON-RPC)──▶ draw4me-mcp ──U
   to treat them that way.
 
 
+See [REVIEW.md](REVIEW.md) for the performance and security review.
+
 ## 4. Later
 
 - **In-app chat** can reuse the same MCP server by running `claude -p --mcp-config …`.
