@@ -1,0 +1,5 @@
+{"op": "apply", "origin": "agent", "label": "Agent: add a rug-sized box and move the table",
+ "commands": [
+   {"command": "add", "kind": "box", "name": "Rug", "position": {"x": 2.5, "z": 4}, "params": {"width": 2.6, "depth": 1.8, "height": 0.01}, "material": "fabric_grey"},
+   {"command": "move", "ids": ["T1"], "by": {"x": 0.2}}
+ ]}

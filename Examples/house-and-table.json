@@ -1,0 +1,8 @@
+[
+  {"command": "loadTemplate", "template": "simple_house"},
+  {"command": "add", "kind": "table", "ref": "t", "name": "Dining table",
+   "position": {"x": 2.5, "z": 4}, "params": {"width": 1.8, "depth": 0.9, "legStyle": "trestle"}, "material": "oak"},
+  {"command": "add", "kind": "chair", "ref": "c", "position": {"x": 2.05, "z": 3.38}, "material": "walnut"},
+  {"command": "array", "ids": ["@c"], "count": 2, "spacing": {"x": 0.9}},
+  {"command": "add", "kind": "shelf", "name": "Bookcase", "position": {"x": 0.35, "z": 1.5}, "rotation": -90}
+]
