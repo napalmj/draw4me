@@ -1,0 +1,5 @@
+{
+  "name": "draw4me",
+  "version": "0.2.0",
+  "description": "Design houses, rooms and furniture in the native draw4me app by talking to Claude. Bundles the draw4me MCP server, a design skill, slash commands and a layout-critic agent."
+}

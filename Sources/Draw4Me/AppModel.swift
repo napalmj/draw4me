@@ -57,6 +57,7 @@ final class AppModel: ObservableObject {
             self.agentChanged = self.agentChanged.filter { ed.document.contains($0) }
         }
         automation.model = self
+        if agentConnectionsEnabled { startAgentSocket() }
         apply(.loadTemplate(LoadTemplateCommand(template: .simpleHouse)))
         editor.load(editor.document) // start with a clean history
         isDirty = false
@@ -106,6 +107,43 @@ final class AppModel: ObservableObject {
     }
 
     var warnings: [DesignWarning] { editor.warnings }
+
+    // MARK: Agent connections (local socket for the MCP relay)
+
+    /// Same-user-only Unix socket the `draw4me-mcp` relay talks to. See `LocalSocketServer`.
+    private var socketServer: LocalSocketServer?
+    @Published private(set) var agentSocketPath: String?
+
+    var agentConnectionsEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "agentConnectionsEnabled") as? Bool ?? true }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "agentConnectionsEnabled")
+            if newValue { startAgentSocket() } else { stopAgentSocket() }
+            objectWillChange.send()
+        }
+    }
+
+    func startAgentSocket() {
+        guard socketServer == nil else { return }
+        let service = automation
+        let server = LocalSocketServer { data in
+            MainActor.assumeIsolated { AutomationEndpoint.handle(json: data, service: service) }
+        }
+        do {
+            try server.start()
+            socketServer = server
+            agentSocketPath = server.path
+        } catch {
+            statusMessage = "Agent connections are off: \(error)"
+            statusIsError = true
+        }
+    }
+
+    func stopAgentSocket() {
+        socketServer?.stop()
+        socketServer = nil
+        agentSocketPath = nil
+    }
 
     /// For continuous controls (colour wells): repeated edits with the same key within 1.5 s
     /// collapse into one undo step.

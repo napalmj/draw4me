@@ -24,7 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     model.showConsole = true
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            let delay = Double(ProcessInfo.processInfo.environment["DRAW4ME_SNAPSHOT_DELAY"] ?? "") ?? 4
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(1, min(delay, 120))) {
                 Self.snapshotWindow(to: URL(fileURLWithPath: path))
                 NSApp.terminate(nil)
             }
@@ -53,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { model?.stopAgentSocket() }
+    }
 }
 
 @main
@@ -121,6 +126,12 @@ struct Draw4MeApp: App {
             }
             CommandMenu("Developer") {
                 Toggle("Command Console", isOn: $model.showConsole).keyboardShortcut("k", modifiers: [.command, .shift])
+                Divider()
+                Toggle("Allow Agent Connections", isOn: Binding(get: { model.agentConnectionsEnabled },
+                                                               set: { model.agentConnectionsEnabled = $0 }))
+                if let p = model.agentSocketPath {
+                    Text("Listening on \(p)")
+                }
             }
         }
     }

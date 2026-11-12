@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "draw4me": {
+      "command": ".build/release/draw4me-mcp"
+    }
+  }
+}

@@ -6,3 +6,4 @@ DerivedData/
 xcuserdata/
 *.app
 .DS_Store
+plugin/bin/

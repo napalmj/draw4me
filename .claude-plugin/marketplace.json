@@ -1,0 +1,11 @@
+{
+  "name": "draw4me",
+  "owner": { "name": "draw4me" },
+  "plugins": [
+    {
+      "name": "draw4me",
+      "source": "./plugin",
+      "description": "Drive the draw4me design app from Claude: MCP server, design skill, slash commands, layout critic."
+    }
+  ]
+}

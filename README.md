@@ -6,11 +6,11 @@ you place parametric objects (walls, doors, windows, roofs, tables, chairs and s
 their dimensions in metres. You don't draw faces and push/pull them.
 
 It's built **AI-first**. Every edit is a typed JSON command that goes through a single command
-layer. That's true for toolbar clicks, inspector edits, drags, the Command Console and the CLI.
-A future AI agent will use exactly the same path. **This version contains no AI integration:**
-no API calls or keys, no MCP server, no sockets and no network. See
-[docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) for the seams that are in place and the
-decision that's still open.
+layer. That's true for toolbar clicks, inspector edits, drags, the Command Console, the CLI — and
+**Claude**, which drives the app through an MCP server from the Claude chat you already use
+(Claude Code or the Claude desktop app). **No API key** is involved. See
+[Designing with Claude](#designing-with-claude-mcp) below and
+[docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) for how it's put together.
 
 ![3D view, plan and Command Console after an agent-origin batch](docs/screenshot.png)
 
@@ -142,6 +142,54 @@ Unknown fields are rejected, so a typo like `"lenght"` fails instead of being si
 
 **Materials:** `white_paint`, `plaster`, `concrete`, `brick`, `oak`, `walnut`, `pine`, `glass`,
 `steel`, `black`, `tile`, `fabric_grey`, `roof_tile`, `slate`, `grass`, or any `#RRGGBB` colour.
+
+## Designing with Claude (MCP)
+
+`draw4me-mcp` is a small MCP server. Claude starts it; it forwards Claude's tool calls to the
+running app over a private local socket, so changes appear live in the window (tinted green, with
+**Revert Agent Change** in the status bar and **Edit ▸ Revert Agent Changes**, ⌥⌘Z). If the app isn't
+open, it works headlessly on `~/Library/Application Support/Draw4Me/headless.draw4me`
+(override with `DRAW4ME_DOCUMENT`) and saves after every change.
+
+**Claude Code in this folder** (simplest): the repo's `.mcp.json` points at the release build.
+
+```bash
+swift build -c release --product draw4me-mcp
+```
+
+Then start Claude Code in this folder and approve the `draw4me` server when asked. (The path in
+`.mcp.json` is relative, so start Claude Code from the repo root.)
+
+**As a plugin** (MCP server + design skill + `/draw4me:new-house`, `/draw4me:furnish-room` and a
+`layout-critic` agent), usable from any folder:
+
+```bash
+scripts/build-plugin.sh
+```
+
+Then in Claude Code: `/plugin marketplace add /path/to/draw4me` and `/plugin install draw4me@draw4me`.
+
+**Claude desktop app**: add this to its MCP config (Settings ▸ Developer ▸ Edit Config), using the
+absolute path of your build:
+
+```json
+{ "mcpServers": { "draw4me": { "command": "/path/to/draw4me/.build/release/draw4me-mcp" } } }
+```
+
+Tools: `get_status`, `get_scene`, `get_selection`, `get_catalog`, `get_warnings`, `apply_commands`,
+`add_room`, `add_opening`, `add_furniture`, `render_view` (returns an image Claude can look at),
+`undo_agent_changes`, `export_image`, and (headless only) `open_document` / `save_document`.
+Read-only tools are annotated so Claude Code can allow them without asking.
+
+Try: *"Open draw4me and make a 6 × 4 m studio with a door on the south wall, two windows on the
+north wall, a desk under one window and a bookshelf. Show me the plan."* Select something in the
+app and say *"make this 20 cm wider"*.
+
+Security: the socket lives in a folder only you can open (mode 0700), the socket itself is 0600,
+and the app checks that every connecting process runs as your user. There is no TCP listener.
+File tools only write inside your home folder, never to hidden folders or `~/Library` (except
+draw4me's own folder), and never overwrite without `overwrite: true`. You can turn agent
+connections off in **Developer ▸ Allow Agent Connections**.
 
 ## CLI
 

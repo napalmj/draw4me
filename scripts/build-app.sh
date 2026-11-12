@@ -8,6 +8,7 @@ CONFIG="${1:-release}"
 
 swift build -c "$CONFIG" --product Draw4Me
 swift build -c "$CONFIG" --product draw4me-cli
+swift build -c "$CONFIG" --product draw4me-mcp
 BIN="$(swift build -c "$CONFIG" --show-bin-path)"
 
 APP="build/Draw4Me.app"
@@ -16,6 +17,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/Draw4Me" "$APP/Contents/MacOS/Draw4Me"
 # Ship the headless CLI inside the bundle too (handy for scripting against the same build).
 cp "$BIN/draw4me-cli" "$APP/Contents/MacOS/draw4me-cli"
+# And the MCP server, so the app bundle is self-contained.
+cp "$BIN/draw4me-mcp" "$APP/Contents/MacOS/draw4me-mcp"
 
 # App icon: rendered by draw4me itself from the dining-set template.
 ICONSET="build/AppIcon.iconset"

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "draw4me": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/draw4me-mcp"
+    }
+  }
+}

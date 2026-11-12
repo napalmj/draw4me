@@ -37,6 +37,10 @@ struct ExecutionContext {
 enum Engine {
     static let idPattern = try! NSRegularExpression(pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
+    static func isValidId(_ s: String) -> Bool {
+        s.utf16.count <= 64 && idPattern.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
+
     static func execute(_ cmd: Command, doc: inout SceneDocument, changes: inout ChangeSet, ctx: inout ExecutionContext) throws {
         switch cmd {
         case .newDocument(let c):

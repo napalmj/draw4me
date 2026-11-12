@@ -205,4 +205,37 @@ struct DocIndex {
 public enum Limits {
     public static let maxCommandsPerRequest = 500
     public static let maxObjects = 20_000
+    public static let maxNameLength = 200
+    /// Coordinates beyond ±this many metres are rejected.
+    public static let maxCoordinate = 100_000.0
+}
+
+/// Checks a whole document that came from outside (a file, another process) before it is used.
+public enum DocumentLimits {
+    public static func check(_ doc: SceneDocument) throws {
+        func bad(_ m: String) -> CommandError { CommandError(code: .limitExceeded, message: m) }
+        guard doc.objects.count <= Limits.maxObjects else { throw bad("The document has \(doc.objects.count) objects (max \(Limits.maxObjects))") }
+        guard doc.name.count <= Limits.maxNameLength else { throw bad("The document name is too long") }
+        var ids = Set<String>()
+        for o in doc.objects {
+            guard Engine.isValidId(o.id) else { throw CommandError.invalidParameter("Invalid object id '\(o.id.prefix(80))'") }
+            guard ids.insert(o.id).inserted else { throw CommandError(code: .conflict, message: "Duplicate object id '\(o.id)'") }
+            guard o.name.count <= Limits.maxNameLength else { throw bad("\(o.id): name is too long") }
+            let p = o.transform.position
+            guard p.isFinite, o.transform.rotation.isFinite, abs(p.x) <= Limits.maxCoordinate, abs(p.y) <= Limits.maxCoordinate, abs(p.z) <= Limits.maxCoordinate else {
+                throw CommandError.invalidParameter("\(o.id): position is out of range")
+            }
+            // Parameters must be known and valid for the kind (same rules as commands).
+            _ = try Engine.validatedParams(o.kind, o.params, base: o.kind.defaultParams)
+        }
+        for o in doc.objects {
+            if let h = o.hostId { guard doc.object(h)?.kind == .wall else { throw CommandError.notFound(h) } }
+            if let g = o.parentId { guard doc.object(g)?.kind == .group else { throw CommandError.notFound(g) } }
+        }
+        // No cycles in group nesting.
+        for o in doc.objects {
+            var seen = Set<String>(), p = o.parentId
+            while let id = p { guard seen.insert(id).inserted else { throw CommandError(code: .conflict, message: "Group cycle at \(id)") }; p = doc.object(id)?.parentId }
+        }
+    }
 }
